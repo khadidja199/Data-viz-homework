@@ -1,0 +1,466 @@
+rm(list=ls())
+library(kohonen)
+library(magrittr)
+library(dplyr)
+library(plyr)
+
+############################### import datas #########################################
+## before to begin,we have to merge the datas which has the same columns.
+data = read.csv("C:/Users/amado/Downloads/data1.csv", header = T)
+data1 = read.csv("C:/Users/amado/Downloads/in13.csv", header = T)
+data2 = read.csv("C:/Users/amado/Downloads/an13.csv", header = T)
+
+total_merge = merge(data,data2,by="codcliente")
+total_merge_agg = aggregate(data1$importo, by=list(codcliente=data1$CodCliente), FUN=sum)
+names(total_merge_agg)[names(total_merge_agg) == "x"] = "Money_notP"
+id_client=data1$CodCliente
+counts=data.frame(table(id_client))
+total_merge_agg1 = as.data.frame(counts) # frequence de nombre_visitees par id de chaque clients
+colnames(total_merge_agg1) = c("codcliente", "N_nombre_visites")
+nombre_visite = merge(total_merge_agg1,total_merge_agg, by="codcliente")
+nombre_visite = nombre_visite %>% mutate(column1 = as.numeric(nombre_visite$codcliente))
+total_merge = total_merge %>% mutate(column1 = as.numeric(total_merge$codcliente))
+total_merge$codcliente = as.factor((total_merge$codcliente))
+
+##data finale
+Dataf = full_join(total_merge, nombre_visite , by="codcliente")
+## repartition variable du nombre de nombre_visitees. de 1 à 264 nombre_visitees 
+
+
+
+####################################### Data transformation #############################################################
+#date en fomat ddmmyy
+Dataf$data_inizio = as.Date(Dataf$data_inizio ,format="%d/%m/%Y")
+levels(factor(Dataf$agenzia_tipo))
+#1
+##most interestting variables: age,reduction,Fidels,Femme,CP,Nouvelle_abonne,N_nombre_visites
+Dataf
+summary(Dataf)
+
+#rename columns
+colnames(Dataf)
+names(Dataf)[names(Dataf) == "si2014"] = "Fidels"
+names(Dataf)[names(Dataf) == "importo"] = "prix"
+names(Dataf)[names(Dataf) == "sconto"] = "Remise"
+names(Dataf)[names(Dataf) == "riduzione"] = "Réduction"
+names(Dataf)[names(Dataf) == "agenzia_tipo"] = "Agence_tp"
+names(Dataf)[names(Dataf) == "sesso"] = "Femme"
+names(Dataf)[names(Dataf) == "data_nascita"] = "Age"
+names(Dataf)[names(Dataf) == "comune"] = "Commune"
+names(Dataf)[names(Dataf) == "nuovo_abb"] = "Nouvelle_abonne"
+names(Dataf)[names(Dataf) == "tipo_pag"] = "ModePaiement"
+names(Dataf)[names(Dataf) == "cap"] = "CP"
+names(Dataf)[names(Dataf) == "ultimo_ing.x"] = "Date_last_v"
+names(Dataf)[names(Dataf) == "abb13"] = "start_D_13"
+names(Dataf)[names(Dataf) == "abb14"] = "Renewal_D_14"
+
+#conditions sur certaines variables pour les rendre catégorielles
+## Remise,nouvelle abonné,femme,churner,mode de paiement,
+Dataf$Remise = ifelse(Dataf$Remise == "NESSUNO SCONTO", 0,1)
+Dataf$Nouvelle_abonne = ifelse(Dataf$Nouvelle_abonne == "VECCHIO ABBONATO", 0,1)
+Dataf$Femme = ifelse(Dataf$Femme == "M", 0,1)
+Dataf$Churner= ifelse(Dataf$Fidels == 0, 1,0)#churner=abonné au musée ou pas
+library(superml)
+lbl = LabelEncoder$new()
+Dataf$ModePaiement[is.na(Dataf$ModePaiement)] = "NESSUN"
+lbl$fit(Dataf$ModePaiement)
+Dataf$ModePaiement = lbl$fit_transform(Dataf$ModePaiement)
+Dataf$ModePaiement = as.factor(Dataf$ModePaiement)
+decode_names = lbl$inverse_transform(Dataf$ModePaiement)
+Dataf$Agence_tp[is.na(Dataf$Agence_tp)] = "NESSUN"
+lbl$fit(Dataf$Agence_tp)
+Dataf$Agence_tp = lbl$fit_transform(Dataf$Agence_tp)
+Dataf$Agence_tp = as.factor(Dataf$Agence_tp)
+decode_names = lbl$inverse_transform(Dataf$Agence_tp)
+Dataf$Age = as.numeric(factor(Dataf$Age))
+
+Dataf$Commune = as.numeric(factor(Dataf$Commune))
+Dataf$CP=ifelse(Dataf$Commune == "TORINO" & Dataf$CP == "XXXXX" , "10100", Dataf$CP)
+Dataf$CP=ifelse(Dataf$Commune == "DATO MANCANTE" & Dataf$CP == "XXXXX" , "10098", Dataf$CP)
+Dataf$CP=ifelse(Dataf$Commune == "CAVALLERMAGGIORE" & Dataf$CP == "XXXXX" , "12030", Dataf$CP)
+Dataf$CP=ifelse(Dataf$Commune == "ROMA" & Dataf$CP == "XXXXX" , "10090", Dataf$CP)
+Dataf=Dataf[!(Dataf$CP == "XXXXX" | Dataf$CP<10000),]
+Dataf$CP = as.numeric(as.character(Dataf$CP))
+sapply(Dataf, class)
+str(Dataf)
+
+
+Dataf$Age = strtoi(Dataf$Age)
+##variable age des nombre_visiteeurs en 2022
+Dataf$Age = 2022 - Dataf$Age
+
+
+### correlation matrix
+library(corrplot)
+library(Hmisc)
+library(ggcorrplot)
+rcorr(as.matrix(Dataf[,c("Age", "Money_notP", "N_nombre_visites","CP","Remise","Femme","Churner","prix","ModePaiement")]))
+
+# Create the SOM Grid to see clusters of variables
+library(grid)
+library(RCPp)
+##creer des matrices à partir des variables numeriques
+
+data_train=Dataf[,c(3,9,10,15,16,17,18,19,24)]
+data_train_matrix=as.matrix(scale(data_train))
+som_grid=somgrid(xdim = 10,ydim = 10,topo = "hexagonal")
+som_model = som(subset(data_train_matrix, TRUE, c(Fidels:Age)),
+                 grid=som_grid,
+                 rlen=500,
+                 alpha=c(0.05,0.01),
+                 keep.data = TRUE)
+
+summary(som_model)
+# Plot the SOM
+finaldata_som=plot(som_model, type="codes", bgcol = "lightblue")
+plot(som_model, type="dist.neighbours")
+plot(som_model, type="changes")
+plot(som_model, type="count")
+
+kmeansDat.t <- som_model$codes[[1]] %>% as.matrix
+pretty_palette <- rainbow(5)
+som_cluster <- cutree(hclust(dist(kmeansDat.t)), 5) %>% as.matrix
+# Plot Kohonen's map
+plot(som_model, type="mapping", bgcol = pretty_palette[som_cluster],
+     main = "", pchs="")
+add.cluster.boundaries(som_model, som_cluster)
+plot(som_model, type = "property", property = getCodes(som_model)[,1], main=colnames(getCodes(som_model))[1])
+
+#missing data
+#vizualisation
+library(naniar)
+vis_miss(Dataf, cluster = FALSE, sort_miss =FALSE, show_perc = TRUE,
+         show_perc_col = TRUE, large_data_size = 9e+05,
+         warn_large_data = FALSE)
+#About 13,9% of data are missing values and the rest are observed variables.
+
+#drop all nan in final_data
+library(tidyr)
+na.omit(Dataf)
+library(ggplot2)
+library(gpclib)
+library(ggmap)
+library(rgeos)
+library(maptools)
+library(sp)
+library(rgdal)
+library(ROCR)
+shapefile_italy <- readOGR(dsn = path.expand("C:/Users/amado/Downloads/Italy_shapefile/it_100km.shx"), layer="cap_NO")
+head(shapefile_italy@data$IT_CAP)
+spplot(shapefile_italy)
+data_train<-data_train[!(data_train$CP == "XXXXX" | data_train$CP<10000),]
+data_cp=data_train %>% dplyr::group_by(CP) %>% dplyr:: summarise(count= n())
+names(data_cp)[names(data_cp) == "CP"] <- "IT_CAP"
+# Distribution of cardholders
+shapefile_italy@data=data.frame(join(shapefile_italy@data,data_cp,by="IT_CAP"))
+shapefile_italy@data
+spplot(shapefile_italy,"count", main = "Distribution of clients in northwest Italy", col = "transparent")
+# Distribution of churners
+data_churnTOtotal=data_train %>% dplyr:: group_by(CP) %>% dplyr:: summarise(churners=sum(Churner)/n())
+names(data_churnTOtotal)[names(data_churnTOtotal) == "CP"] <- "IT_CAP"
+shapefile_italy@data=data.frame(join(shapefile_italy@data,data_churnTOtotal,by="IT_CAP"))
+shapefile_italy@data
+spplot(shapefile_italy,"churners", main = "Distribution of percentage of churners")
+#isTRUE(gpclibPermitStatus()) is not TRUE
+Piedmontdf <- fortify(shapefile_italy, region = "IT_CAP")
+Piedmontdf <- merge(fortify(shapefile_italy), as.data.frame(shapefile_italy), by.x="id", by.y=0 )
+data_train[!(data_train$CP == "XXXXX" | data_train$CP<10000),]
+Piedmont_df <- Piedmontdf[!(as.numeric(Piedmontdf$IT_CAP)>10157),]
+Piedmont <- ggplot()+ geom_polygon(data = Piedmont_df, color = 'green', aes(fill = churners, x = long, y= lat, group = group ), size = 0.2)
+print(Piedmont)
+Turin_df <- Piedmontdf[Piedmontdf$IT_CAP<10157&Piedmontdf$IT_CAP>10121&Piedmontdf$IT_CAP !=10137 ,]
+Turin <- ggplot()+ geom_polygon(data = Turin_df, color = 'green', aes(fill = churners, x = long, y= lat, group = group ), size = 0.2)+theme_void()
+library(plotly)
+ggplotly(Turin)
+Turin_df[Turin_df$long>480000,]
+shape_tran <- spTransform(shapefile_italy, "+init=epsg:4326")
+Piedmontdf <- merge(fortify(shape_tran), as.data.frame(shape_tran), by.x="id", by.y=0 )
+Turin_ <- get_map(location = ("turin"), zoom = 8, maptype = "terrain")
+ggmap(Turin_)
+library(readr)
+library(lattice)
+library(caret)
+library(pROC)
+Dataf$X.x = NULL
+Dataf$x = NULL
+Dataf$X.y = NULL
+Dataf$column1.x = NULL
+Dataf$column1.y = NULL
+Dataf$agenzia = NULL
+Dataf$start_D_13 = NULL
+Dataf$Renewal_D_14 = NULL
+Dataf$Date_last_v = NULL
+Dataf$codcliente = NULL
+Dataf$Réduc = NULL
+Dataf$Commune = NULL
+Dataf$Fidels = NULL
+Dataf = subset(Dataf,!is.na(Dataf$data_inizio))
+Dataf = subset(Dataf,!is.na(Dataf$prix))
+Dataf = subset(Dataf,!is.na(Dataf$Remise))
+Dataf = subset(Dataf,!is.na(Dataf$ModePaiement))
+Dataf = subset(Dataf,!is.na(Dataf$Agence_tp))
+Dataf = subset(Dataf,!is.na(Dataf$Femme))
+Dataf = subset(Dataf,!is.na(Dataf$Age))
+Dataf = subset(Dataf,!is.na(Dataf$CP))
+Dataf = subset(Dataf,!is.na(Dataf$Nouvelle_abonne))
+Dataf = subset(Dataf,!is.na(Dataf$N_nombre_visites))
+Dataf = subset(Dataf,!is.na(Dataf$Money_notP))
+Dataf = subset(Dataf,!is.na(Dataf$Churner))
+
+#Set the output to a factor 0 - 1
+Dataf$Churner = factor(Dataf$Churner)
+summary(Dataf$Churner) #highly imbalanced
+colnames(Dataf)
+sapply(Dataf, class)
+Reg_data = Dataf
+num = sample(2,nrow(Reg_data),replace = T,prob = c(0.7,0.3))
+
+###test and train data
+train_data = Reg_data[num==1,]
+test_data = Reg_data[num==2,]
+
+##drop columns profession parceque ce nest pas important pour moi
+drop = c("professione", "A" )
+FinalData= Dataf[,!(names(Dataf) %in% drop)]
+summary(FinalData)
+#5
+#REGRESSION
+#logit
+age=FinalData$Age
+femme=FinalData$Femme
+nb_nombre_visites=FinalData$N_nombre_visites
+money_np=FinalData$Money_notP
+fitdata=lm(age~femme+nb_nombre_visites+money_np,data = FinalData)
+summary(fitdata)
+#stepAIC
+library(MASS)
+#Performs stepwise model selection by AIC.
+step_2 = stepAIC(fitdata,direction = "both")
+step_2$anova
+
+
+## prediction models
+
+####################################################################
+#utiliser les modeles de machines learning pour voir la performance du modele
+#Installer et charger le package 'stats' 
+library(stats)
+log_model <- glm(Churner ~ Age + Femme, data=test_data, family="binomial")
+summary(log_model)
+
+#predictions
+p1=predict(log_model,train_data,type='response')
+head(p1)
+head(train_data)
+#confusion Matrix
+# $Misclassification error -Training data pour comparer le nombre de vrais/faux positifs et négatifs.
+pre1<-ifelse(p1 > 0.5, 1, 0)
+table<-table(Prediction = pre1, 
+             Actual = train_data$Femme) 
+table
+1 - sum(diag(table)) / sum(table)
+
+churn_l = predict(log_model, test_data, type = "response")
+Pob_log_model = predict(log_model, test_data, type = "response")
+Pob_log_model1 = as.data.frame(Pob_log_model)
+test_data$log_model_c = Pob_log_model1$`1`
+y_pred_num_log_model = ifelse(test_data$log_model_c> 0.5, 1, 0)
+y_observed_log_model = test_data$Churner
+y_pred_num_log_model=test_data$class_log_model
+predict_log_model_model = predict(log_model, test_data)
+library(caret)
+log_model_confusionMatrix = confusionMatrix(as.factor(y_pred_num_log_model),as.factor(y_observed_log_model))
+fourfoldplot(log_model_confusionMatrix$table,main = "logit")
+
+roc_l = roc(test_data$Churner,as.numeric((Pob_log_model1$`0`),plot=TRUE, legacy.axes = TRUE))
+coords(roc_l, "best")
+plot(roc_l, col = "black", lty = 10, legacy.axes = TRUE)
+
+# *. Random Forest 
+library(randomForest)
+rf = randomForest(Churner~ Age+Femme+Nouvelle_abonne+Remise, data = train_data)
+rf
+varImpPlot(rf)
+# Fitted data in probability
+Churn_rf = predict(rf, test_data, type = "class")
+Pob_rf = predict(rf, test_data, type = "prob")
+Pob_rf1 = as.data.frame(Pob_rf)
+test_data$rf_c = Pob_rf1$`1`
+y_pred_num_rf = ifelse(test_data$rf_c> 0.5, 1, 0)
+y_observed_rf = test_data$Churner
+test_data$class_rf= y_pred_num_rf
+predict_rf_model = predict(rf, test_data)
+library(caret)
+rf_confusionMatrix = confusionMatrix(as.factor(y_pred_num_rf),as.factor(y_observed_rf))
+fourfoldplot(rf_confusionMatrix$table,main = "RandomForest")
+Churn_rf = as.factor(test_data$class_rf)
+mu_rf = ddply(test_data, "Churner", summarise, grp.mean=mean(rf_c))
+library(ggplot2)
+p1 = ggplot(test_data, aes(rf_c, color= Churn)) + geom_density(kernel="gaussian")+
+  geom_density(aes(fill = Churn), alpha = 0.4)+ scale_color_manual(values = c("red", "black"))+
+  scale_fill_manual(values = c("#868686FF", "#EFC000FF"))+
+  geom_vline(data=mu_rf, aes(xintercept=grp.mean, color=Churn), linetype="dashed")
+plot(p1)
+#Evaluate prediction model by calculating accuracy (proportion of y_predicted that match y_observed)
+Accuracy_predict_rf_model = mean(y_observed_rf == predict_rf_model)
+library(pROC)
+roc_rf = roc(test_data$Churner,as.numeric((Pob_rf1$`0`),plot=TRUE, legacy.axes = TRUE))
+coords(roc_rf, "best")
+plot(roc_rf, col = "black", lty = 10, legacy.axes = TRUE)
+
+# 2. Naive Bayes
+library(gdata)
+library(cowplot)
+library(plyr)
+library(e1071)
+Naive_bayes = naiveBayes(train_data$Churner ~ ., data = train_data, laplace=1, usekernel = T)
+# Fitted data in probability
+Churn_NB = predict(Naive_bayes, test_data, type = "class")
+Pob_NB = predict(Naive_bayes, test_data, type = "raw")
+Pob_NB1 = as.data.frame(Pob_NB)
+test_data$Naive_B = Pob_NB1$`1`
+y_pred_num = ifelse(test_data$Naive_B > 0.5, 1, 0)
+y_observed = test_data$Churner
+test_data$class_NB= y_pred_num
+predict_NB_model = predict(Naive_bayes, test_data)
+library(pROC)
+roc_rf = roc(test_data$Churner,as.numeric((Pob_rf1$`0`),plot=TRUE, legacy.axes = TRUE))
+coords(roc_rf, "best")
+plot(roc_NB, col = "black", lty = 10, legacy.axes = TRUE)
+library(caret)
+LM_confusionMatrix = confusionMatrix(as.factor(y_pred_num),as.factor(y_observed))
+fourfoldplot(LM_confusionMatrix$table,main = "Naive Bayes")
+#Common support - predicted distribution
+Churn = as.factor(test_data$class_NB)
+mu = ddply(test_data, "Churn", summarise, grp.mean=mean(Naive_B))
+library(ggplot2)
+p2 = ggplot(test_data, aes(Naive_B, color= Churn)) + geom_density(kernel="gaussian")+
+  geom_density(aes(fill = Churn), alpha = 0.4)+ scale_color_manual(values = c("red", "yellow"))+
+  scale_fill_manual(values = c("Blue", "green"))+
+  geom_vline(data=mu, aes(xintercept=grp.mean, color=Churn), linetype="dashed")
+plot(p2)
+#Evaluate prediction model by calculating accuracy (proportion of y_predicted that match y_observed)
+Accuracy_predict_NB_model = mean(y_observed == predict_NB_model)
+library(pROC)
+roc_NB = roc(test_data$Churner,as.numeric((Pob_NB1$`0`),plot=TRUE, legacy.axes = TRUE))
+coords(roc_NB, "best")
+plot(roc_NB, col = "black", lty = 10, legacy.axes = TRUE)
+
+plot(roc_NB, col = "red", main = "ROC sensibilities", cex.main = 0.8, lwd = 2,
+     print.cutoffs.at = seq(0, 1), cex.cutoffs = 0.7)
+plot(roc_rf, add = TRUE, col = "blue", lty = 2, lwd = 2)
+plot(roc_s, add = TRUE, col = "yellow", lty = 2, lwd = 2)
+legend("bottomright", legend = c("RF", "Naives Bayes"), lty = c(1,2),
+       col = c("red", "blue"))
+
+
+
+library(ROCR)
+# Créer un modèle ROCR
+pred_1=prediction(y_pred_num_rf,y_observed_rf)
+pred_2=prediction(y_pred_num, y_observed)
+pred_3=prediction(y_pred_num_log_model,y_observed_log_model)
+
+perf_1 <- performance(pred_1, "tpr", "fpr")
+perf_2 <- performance(pred_2, "tpr", "fpr")
+perf_3=performance(pred_3,"tpr","fpr")
+
+# Visualiser les deux courbes ROC
+plot(perf_1, col = "red", main = "ROC Curves", cex.main = 0.8, lwd = 2,
+     print.cutoffs.at = seq(0, 1), cex.cutoffs = 0.7)
+plot(perf_2, add = TRUE, col = "blue", lty = 2, lwd = 2)
+plot(perf_3, add = TRUE, col = "yellow", lty = 2, lwd = 2)
+legend("bottomright", legend = c("Random forest", "Naives Bayes"), lty = c(1,2),
+       col = c("red", "blue"))
+
+roc_s = roc(test_data$Churner,as.numeric((Pob_NB1$`1`)))
+coords(roc_s, "best")
+plot(roc_s, col = "black", lty = 10, legacy.axes = TRUE)
+
+
+#################################################### 
+#cumulative profit
+alpha = 1
+test_data$cost = 1* test_data$N_nombre_visites
+test_data$prof=(test_data$prix- test_data$cost)*as.numeric(test_data$Churner) -alpha
+library(ROCR)
+x.rf.prob.rorc = prediction(y_pred_num_rf,y_observed_rf)
+x.rf.performance = performance(x.rf.prob.rorc, "tpr","fpr")
+plot(x.rf.performance, col=4)
+Profit_rf= test_data[order(-test_data$rf),]
+Profit_rf$rf.cumprof=cumsum(Profit_rf$prof)
+customer = 1:length(Profit_rf$rf.cumprof)
+customer = customer / length(Profit_rf$rf.cumprof) * 100
+plot(y = Profit_rf$rf.cumprof, x = customer)
+Profit_naive_bayes= test_data[order(-test_data$Naive_B),]
+Profit_naive_bayes$NB.cumprof=cumsum(Profit_naive_bayes$prof)
+customer = 1:length(Profit_naive_bayes$NB.cumprof)
+customer = customer / length(Profit_naive_bayes$NB.cumprof) * 100
+plot(y = Profit_naive_bayes$NB.cumprof, x = customer)
+
+library(ggplot2)
+library(reshape2)
+# original data in a 'wide' format
+x = customer
+df = data.frame(x, Profit_rf$rf.cumprof, Profit_naive_bayes$NB.cumprof)
+# melt the data to a long format
+df2 = melt(data = df, id.vars = "x")
+library(sf)
+library(tidyverse)
+Maxi = df2 %>% group_by(variable) %>% filter(value == max(value)) %>% arrange(x)
+# plot, using the aesthetics argument 'colour'
+ggplot(data = df2, aes(x = x, y = value, colour = variable)) + geom_line()+
+  scale_color_manual(labels = c( "randomforest" , "Naive Bayes"), values = c("blue", "red")) +
+  guides(color=guide_legend("Model")) +
+  labs(title="alpha = 1", x="Percentage", y="profit cumulatif") +
+  theme(text = element_text(size=20)) +
+  geom_vline(data = Maxi, aes(xintercept = x, color = variable), linetype = "dashed")
+test_data$cost = 1* test_data$N_nombre_visites
+test_data_real = test_data
+test_data_real$Fidel = as.numeric(ifelse(test_data_real$Churner==0, 1,0))
+test_data_real$Profit_real = test_data_real$Fidel * (test_data_real$prix - test_data_real$cost)
+test_data_real = test_data_real[order(as.numeric(-test_data_real$Profit_real)),]
+test_data_real$R.cumprof =cumsum(test_data_real$Profit_real)
+customer = 1:length(test_data_real$R.cumprof)
+customer = customer / length(test_data_real$R.cumprof) * 100
+plot(y = test_data_real$R.cumprof, x = customer,
+     ylab="profit cumulatif", xlab="Percentage", col=2, type="l", xlim=c(-5,105))
+Profit_rf2 = test_data
+Profit_rf2$cost = 1* Profit_rf2$N_nombre_visites
+Profit_rf2= Profit_rf2[order(-Profit_rf2$rf),]
+Profit_rf2$exp_prof= (1-Profit_rf2$rf*0.9)*((Profit_rf2$prix) - Profit_rf2$cost)
+Profit_rf2$L.cumprof=cumsum(Profit_rf2$exp_prof)
+customer = 1:length(Profit_rf2$L.cumprof)
+customer = customer / length(Profit_rf2$L.cumprof) * 100
+plot(y = Profit_rf2$L.cumprof, x = customer,
+     ylab="profit cumulatif", xlab="Percentage", col=2, type="l", xlim=c(-5,105))
+Profit_naive_bayes2 = test_data
+Profit_naive_bayes2$cost = 1* Profit_naive_bayes2$N_nombre_visites
+Profit_naive_bayes2= Profit_naive_bayes2[order(-Profit_naive_bayes2$Naive_B),]
+Profit_naive_bayes2$exp_prof= (1-Profit_naive_bayes2$Naive_B*0.9)*((Profit_naive_bayes2$prix) - Profit_naive_bayes2$cost)
+Profit_naive_bayes2$N.cumprof=cumsum(Profit_naive_bayes2$exp_prof)
+customer = 1:length(Profit_naive_bayes2$N.cumprof)
+customer = customer / length(Profit_naive_bayes2$N.cumprof) * 100
+plot(y = Profit_naive_bayes2$N.cumprof, x = customer,
+     ylab="cum Profit ?", xlab="Percentage", col=2, type="l", xlim=c(-5,105))
+Profit_S2 = test_data
+Profit_S2$cost = 1* Profit_S2$N_nombre_visites
+Profit_S2$exp_prof= (1-Profit_S2$rf*0.9)*((Profit_S2$prix) - Profit_S2$cost)
+Profit_S2= Profit_S2[order(-Profit_S2$rf),]
+Profit_S2$SVM.cumprof=cumsum(Profit_S2$exp_prof)
+customer = 1:length(Profit_S2$SVM.cumprof)
+customer = customer / length(Profit_S2$SVM.cumprof) * 100
+plot(y = Profit_S2$SVM.cumprof, x = customer,
+     ylab="cum Profit ?", xlab="Percentage", col=2, type="l", xlim=c(-5,105))
+x = customer
+df = data.frame(x, test_data_real$R.cumprof, Profit_rf2$L.cumprof, Profit_naive_bayes2$N.cumprof)
+# melt the data to a long format
+df2 = melt(data = df, id.vars = "x")
+# plot, using the aesthetics argument 'colour'
+ggplot(data = df2, aes(x = x, y = value, colour = variable)) + geom_line()+
+  scale_color_manual(labels = c( "Real data", "randomforest" , "Naive Bayes"), values = c("black", "blue", "red")) +
+  guides(color=guide_legend("Models")) +
+  labs(title="actual profit vs predicted profit", x="Percentage", y="profit cumulatif") +
+  theme(text = element_text(size=20))
+newdata3$prof=(newdata3$revenue*newdata3$y1)-newdata3$cos
+
